@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لعبة المنصات الخارقة - Epix Jump</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0f172a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            color: white;
+        }
+        canvas {
+            background: linear-gradient(to bottom, #1e1b4b, #312e81);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
+            border-radius: 12px;
+            max-width: 95vw;
+            height: auto;
+        }
+        .ui-panel {
+            margin-bottom: 15px;
+            display: flex;
+            gap: 30px;
+            font-size: 20px;
+            font-weight: bold;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 10px 20px;
+            border-radius: 8px;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .instructions {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #94a3b8;
+            text-align: center;
+        }
+        span { color: #38bdf8; }
+    </style>
+</head>
+<body>
+
+<div class="ui-panel">
+    <div>النقاط: <span id="scoreVal">0</span></div>
+    <div>الأرواح: <span id="livesVal">3</span></div>
+    <div>القدرة الخارقة (Dash): <span id="dashVal">جاهز</span></div>
+</div>
+
+<canvas id="gameCanvas" width="800" height="450"></canvas>
+
+<div class="instructions">
+    التحكم: <b>السهم الأيمن والأيسر</b> للحركة |
+    <b>السهم الأعلى أو مسافة (Space)</b> للقفز |
+    <b>Shift الأيمن/الأيسر</b> للاندفاع الخارق (Dash).
+</div>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+const scoreVal = document.getElementById("scoreVal");
+const livesVal = document.getElementById("livesVal");
+const dashVal = document.getElementById("dashVal");
+
+const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+const audioCtx = AudioContextClass ? new AudioContextClass() : null;
+
+function playSound(type) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    const now = audioCtx.currentTime;
+
+    if (type === "jump") {
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(150, now);
+        osc.frequency.exponentialRampToValueAtTime(400, now + 0.15);
+        gainNode.gain.setValueAtTime(0.1, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+        osc.start(now);
+        osc.stop(now + 0.15);
+    } else if (type === "coin") {
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(500, now);
+        osc.frequency.setValueAtTime(800, now + 0.08);
+        gainNode.gain.setValueAtTime(0.15, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+        osc.start(now);
+        osc.stop(now + 0.2);
+    } else if (type === "dash") {
+        osc.type = "sawtooth";
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(100, now + 0.25);
+        gainNode.gain.setValueAtTime(0.2, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
+        osc.start(now);
+        osc.stop(now + 0.25);
+    } else if (type === "hit") {
+        osc.type = "square";
+        osc.frequency.setValueAtTime(100, now);
+        osc.frequency.exponentialRampToValueAtTime(40, now + 0.3);
+        gainNode.gain.setValueAtTime(0.3, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+        osc.start(now);
+        osc.stop(now + 0.3);
+    }
+}
+
+let score = 0;
+let lives = 3;
+let cameraX = 0;
+let shakeTimer = 0;
+
+const player = {
+    x: 100,
+    y: 250,
+    width: 30,
+    height: 40,
+    vx: 0,
+    vy: 0,
+    speed: 5,
+    jumpForce: -11,
+    gravity: 0.5,
+    grounded: false,
+    dashCooldown: 0,
+    isDashing: false,
+    dashTimer: 0,
+    dashDirection: 1,
+    color: "#38bdf8"
+};
+
+const keys = {};
+
+window.addEventListener("keydown", e => {
+    if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+
+    keys[e.code] = true;
+
+    if (
+        (e.code === "ShiftLeft" || e.code === "ShiftRight") &&
+        player.dashCooldown <= 0 &&
+        !player.isDashing
+    ) {
+        player.isDashing = true;
+        player.dashTimer = 15;
+        player.dashCooldown = 60;
+
+        if (keys["ArrowLeft"] || keys["KeyA"]) {
+            player.dashDirection = -1;
+        } else if (keys["ArrowRight"] || keys["KeyD"]) {
+            player.dashDirection = 1;
+        }
+
+        playSound("dash");
+        shakeTimer = 10;
+    }
+});
+
+window.addEventListener("keyup", e => {
+    keys[e.code] = false;
+});
+
+const platforms = [
+    { x: 0, y: 380, width: 1200, height: 70, color: "#475569" },
+    { x: 400, y: 280, width: 180, height: 20, color: "#64748b" },
+    { x: 700, y: 200, width: 200, height: 20, color: "#64748b" },
+    { x: 1000, y: 300, width: 150, height: 20, color: "#64748b" },
+    { x: 1300, y: 220, width: 220, height: 20, color: "#64748b" },
+    { x: 1700, y: 380, width: 1500, height: 70, color: "#475569" },
+    { x: 1950, y: 270, width: 150, height: 20, color: "#64748b" },
+    { x: 2250, y: 190, width: 180, height: 20, color: "#64748b" }
+];
+
+let coins = [
+    { x: 450, y: 230, radius: 10, collected: false },
+    { x: 780, y: 150, radius: 10, collected: false },
+    { x: 1070, y: 250, radius: 10, collected: false },
+    { x: 1400, y: 170, radius: 10, collected: false },
+    { x: 2000, y: 220, radius: 10, collected: false },
+    { x: 2340, y: 140, radius: 10, collected: false }
+];
+
+let enemies = [
+    { x: 500, y: 340, width: 30, height: 40, vx: 2, minX: 400, maxX: 580 },
+    { x: 1100, y: 260, width: 30, height: 40, vx: -2, minX: 1000, maxX: 1130 },
+    { x: 1850, y: 340, width: 30, height: 40, vx: 3, minX: 1750, maxX: 2000 }
+];
+
+let particles = [];
+
+function createParticles(x, y, color) {
+    for (let i = 0; i < 8; i++) {
+        particles.push({
+            x,
+            y,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6,
+            radius: Math.random() * 4 + 2,
+            color,
+            life: 30
+        });
+    }
+}
+
+function resetPlayer() {
+    player.x = 100;
+    player.y = 200;
+    player.vx = 0;
+    player.vy = 0;
+    player.grounded = false;
+    player.isDashing = false;
+}
+
+function gameOver(message) {
+    alert(message);
+    score = 0;
+    lives = 3;
+    coins.forEach(c => c.collected = false);
+    enemies = [
+        { x: 500, y: 340, width: 30, height: 40, vx: 2, minX: 400, maxX: 580 },
+        { x: 1100, y: 260, width: 30, height: 40, vx: -2, minX: 1000, maxX: 1130 },
+        { x: 1850, y: 340, width: 30, height: 40, vx: 3, minX: 1750, maxX: 2000 }
+    ];
+    resetPlayer();
+}
+
+function update() {
+    if (player.dashCooldown > 0) player.dashCooldown--;
+
+    if (player.isDashing) {
+        player.vx = player.dashDirection * 15;
+        player.vy = 0;
+        player.dashTimer--;
+
+        if (player.dashTimer <= 0) {
+            player.isDashing = false;
+        }
+    } else {
+        if (keys["ArrowRight"] || keys["KeyD"]) {
+            player.vx = player.speed;
+            player.dashDirection = 1;
+        } else if (keys["ArrowLeft"] || keys["KeyA"]) {
+            player.vx = -player.speed;
+            player.dashDirection = -1;
+        } else {
+            player.vx = 0;
+        }
+
+        if (
+            (keys["ArrowUp"] || keys["KeyW"] || keys["Space"]) &&
+            player.grounded
+        ) {
+            player.vy = player.jumpForce;
+            player.grounded = false;
+            playSound("jump");
+            createParticles(
+                player.x + player.width / 2,
+                player.y + player.height,
+                "#ffffff"
+            );
+        }
+
+        player.vy += player.gravity;
+    }
+
+    const previousY = player.y;
+    player.x += player.vx;
+    player.y += player.vy;
+    player.grounded = false;
+
+    platforms.forEach(p => {
+        const horizontal =
+            player.x < p.x + p.width &&
+            player.x + player.width > p.x;
+
+        if (!horizontal) return;
+
+        const previousBottom = previousY + player.height;
+        const currentBottom = player.y + player.height;
+
+        if (
+            player.vy >= 0 &&
+            previousBottom <= p.y &&
+            currentBottom >= p.y
+        ) {
+            player.y = p.y - player.height;
+            player.vy = 0;
+            player.grounded = true;
+        }
+    });
+
+    enemies.forEach(e => {
+        e.x += e.vx;
+
+        if (e.x < e.minX || e.x > e.maxX) {
+            e.vx *= -1;
+        }
+
+        const hit =
+            player.x < e.x + e.width &&
+            player.x + player.width > e.x &&
+            player.y < e.y + e.height &&
+            player.y + player.height > e.y;
+
+        if (!hit) return;
+
+        if (player.isDashing) {
+            enemies = enemies.filter(enemy => enemy !== e);
+            score += 100;
+            playSound("coin");
+            createParticles(e.x, e.y, "#38bdf8");
+        } else if (
+            player.vy > 0 &&
+            player.y + player.height - player.vy <= e.y + 10
+        ) {
+            enemies = enemies.filter(enemy => enemy !== e);
+            player.vy = -8;
+            score += 50;
+            playSound("coin");
+            createParticles(e.x, e.y, "#ef4444");
+        } else {
+            lives--;
+            playSound("hit");
+            shakeTimer = 15;
+            resetPlayer();
+
+            if (lives <= 0) {
+                gameOver("انتهت اللعبة! خسرت كل أرواحك.");
+            }
+        }
+    });
+
+    coins.forEach(c => {
+        if (
+            !c.collected &&
+            player.x < c.x + c.radius &&
+            player.x + player.width > c.x - c.radius &&
+            player.y < c.y + c.radius &&
+            player.y + player.height > c.y - c.radius
+        ) {
+            c.collected = true;
+            score += 20;
+            playSound("coin");
+            createParticles(c.x, c.y, "#facc15");
+        }
+    });
+
+    if (player.y > canvas.height) {
+        lives--;
+        playSound("hit");
+        shakeTimer = 15;
+        resetPlayer();
+
+        if (lives <= 0) {
+            gameOver("انتهت اللعبة! سقطت في الهاوية.");
+        }
+    }
+
+    cameraX = Math.max(0, player.x - 250);
+
+    particles.forEach((p, index) => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+
+        if (p.life <= 0) particles.splice(index, 1);
+    });
+
+    scoreVal.innerText = score;
+    livesVal.innerText = lives;
+    dashVal.innerText =
+        player.dashCooldown <= 0
+            ? "جاهز (Shift)"
+            : Math.ceil(player.dashCooldown / 10);
+
+    dashVal.style.color =
+        player.dashCooldown <= 0 ? "#4ade80" : "#f87171";
+}
+
+function draw() {
+    ctx.save();
+
+    if (shakeTimer > 0) {
+        ctx.translate(
+            (Math.random() - 0.5) * 8,
+            (Math.random() - 0.5) * 8
+        );
+        shakeTimer--;
+    }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    ctx.translate(-cameraX, 0);
+
+    ctx.fillStyle = "rgba(255,255,255,0.1)";
+
+    for (let i = 0; i < 10; i++) {
+        ctx.fillRect(i * 300 + cameraX * 0.2, 100, 50, 200);
+    }
+
+    platforms.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.width, p.height);
+
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillRect(p.x, p.y, p.width, 4);
+    });
+
+    coins.forEach(c => {
+        if (!c.collected) {
+            ctx.fillStyle = "#facc15";
+            ctx.beginPath();
+            ctx.arc(c.x, c.y, c.radius, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "#ca8a04";
+            ctx.stroke();
+        }
+    });
+
+    enemies.forEach(e => {
+        ctx.fillStyle = "#ef4444";
+        ctx.fillRect(e.x, e.y, e.width, e.height);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(e.x + 5, e.y + 8, 6, 6);
+        ctx.fillRect(e.x + 18, e.y + 8, 6, 6);
+    });
+
+    ctx.fillStyle = player.isDashing ? "#ffffff" : player.color;
+    ctx.fillRect(player.x, player.y, player.width, player.height);
+
+    if (player.isDashing) {
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(
+            player.x - 4,
+            player.y - 4,
+            player.width + 8,
+            player.height + 8
+        );
+    }
+
+    particles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+    });
+
+    ctx.restore();
+    ctx.restore();
+}
+
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
